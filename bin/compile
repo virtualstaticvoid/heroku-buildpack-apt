@@ -4,6 +4,14 @@
 # fail fast
 set -e
 
+#
+# See the following for details:
+#
+#  http://linux.die.net/man/8/apt-get
+#  http://manpages.ubuntu.com/manpages/wily/man8/apt-key.8.html
+#  https://github.com/rocker-org/rocker/blob/86262e0f3bdc048082cbeed36e85fe17263ef7a5/r-base/Dockerfile
+#
+
 # debug
 # set -x
 
@@ -35,12 +43,44 @@ APT_STATE_DIR="$CACHE_DIR/apt/state"
 mkdir -p "$APT_CACHE_DIR/archives/partial"
 mkdir -p "$APT_STATE_DIR/lists/partial"
 
-APT_OPTIONS="-o debug::nolocking=true -o dir::cache=$APT_CACHE_DIR -o dir::state=$APT_STATE_DIR"
+KEYS_FILE="$BUILD_DIR/Aptfile.keys"
+SOURCES_FILE="$BUILD_DIR/Aptfile.sources"
+
+if [[ -f "$KEYS_FILE" ]]; then
+
+  topic "Building keyring"
+
+  # export the current apt keys
+  gpg --keyring /etc/apt/trusted.gpg --export -o keys 2>&1 | indent
+
+  # create a new keyring, importing apt keys
+  gpg --import keys 2>&1 | indent
+
+  for KEY in $(cat $KEYS_FILE); do
+    IFS=: read keyserver recvkey <<< $KEY
+    gpg --keyserver $keyserver --recv-key $recvkey 2>&1 | indent
+  done
+
+  unset IFS # ensure default
+fi
+
+if [[ -f "$SOURCES_FILE" ]]; then
+
+  topic "Adding additional package sources"
+  cat /etc/apt/sources.list > $CACHE_DIR/sources.list
+  echo >> $CACHE_DIR/sources.list
+  cat $SOURCES_FILE >> $CACHE_DIR/sources.list
+
+fi
+
+APT_OPTIONS="-o debug::nolocking=true -o dir::cache=$APT_CACHE_DIR -o dir::state=$APT_STATE_DIR -o dir::etc::sourcelist=$CACHE_DIR/sources.list"
+KEYRING="-o dir::etc::trusted=/app/.gnupg/pubring.gpg"
 
 topic "Updating apt caches"
-apt-get $APT_OPTIONS update | indent
+apt-get $APT_OPTIONS $KEYRING update | indent
 
-for PACKAGE in $(cat $BUILD_DIR/Aptfile); do
+PACKAGES=""
+while IFS='' read -r PACKAGE || [[ -n "$PACKAGE" ]]; do
   if [[ $PACKAGE == *deb ]]; then
     PACKAGE_NAME=$(basename $PACKAGE .deb)
     PACKAGE_FILE=$APT_CACHE_DIR/archives/$PACKAGE_NAME.deb
@@ -48,10 +88,12 @@ for PACKAGE in $(cat $BUILD_DIR/Aptfile); do
     topic "Fetching $PACKAGE"
     curl -s -L -z $PACKAGE_FILE -o $PACKAGE_FILE $PACKAGE 2>&1 | indent
   else
-    topic "Fetching .debs for $PACKAGE"
-    apt-get $APT_OPTIONS -y --force-yes -d install --reinstall $PACKAGE | indent
+    PACKAGES="$PACKAGES $PACKAGE"
   fi
-done
+done < "$BUILD_DIR/Aptfile"
+
+topic "Fetching .debs for $PACKAGES"
+apt-get $APT_OPTIONS $KEYRING -y --force-yes -d install --reinstall $PACKAGES | indent
 
 mkdir -p $BUILD_DIR/.apt
 
@@ -80,5 +122,5 @@ export CPATH="$INCLUDE_PATH"
 export CPPPATH="$INCLUDE_PATH"
 export PKG_CONFIG_PATH="$BUILD_DIR/.apt/usr/lib/x86_64-linux-gnu/pkgconfig:$BUILD_DIR/.apt/usr/lib/i386-linux-gnu/pkgconfig:$BUILD_DIR/.apt/usr/lib/pkgconfig:$PKG_CONFIG_PATH"
 
-#give environment to later buildpacks
+# give environment to later buildpacks
 export | grep -E -e ' (PATH|LD_LIBRARY_PATH|LIBRARY_PATH|INCLUDE_PATH|CPATH|CPPPATH|PKG_CONFIG_PATH)='  > "$LP_DIR/export"
