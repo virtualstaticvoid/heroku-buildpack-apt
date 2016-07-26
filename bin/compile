@@ -46,16 +46,16 @@ mkdir -p "$APT_STATE_DIR/lists/partial"
 KEYS_FILE="$BUILD_DIR/Aptfile.keys"
 SOURCES_FILE="$BUILD_DIR/Aptfile.sources"
 
+# export the current apt keys
+gpg --keyring /etc/apt/trusted.gpg --export -o keys 2>&1 | indent
+
+# create a new keyring and import apt keys
+gpg --import keys 2>&1 | indent
+
+# additional keys provided?
 if [[ -f "$KEYS_FILE" ]]; then
 
   topic "Building keyring"
-
-  # export the current apt keys
-  gpg --keyring /etc/apt/trusted.gpg --export -o keys 2>&1 | indent
-
-  # create a new keyring, importing apt keys
-  gpg --import keys 2>&1 | indent
-
   for KEY in $(cat $KEYS_FILE); do
     IFS=: read keyserver recvkey <<< $KEY
     gpg --keyserver $keyserver --recv-key $recvkey 2>&1 | indent
@@ -64,10 +64,13 @@ if [[ -f "$KEYS_FILE" ]]; then
   unset IFS # ensure default
 fi
 
+# copy over existing sources
+cat /etc/apt/sources.list > $CACHE_DIR/sources.list
+
+# additional sources provided?
 if [[ -f "$SOURCES_FILE" ]]; then
 
   topic "Adding additional package sources"
-  cat /etc/apt/sources.list > $CACHE_DIR/sources.list
   echo >> $CACHE_DIR/sources.list
   cat $SOURCES_FILE >> $CACHE_DIR/sources.list
 
