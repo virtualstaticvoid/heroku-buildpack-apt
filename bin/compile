@@ -98,12 +98,44 @@ done < "$BUILD_DIR/Aptfile"
 topic "Fetching .debs for $PACKAGES"
 apt-get $APT_OPTIONS $KEYRING -y --force-yes -d install --reinstall $PACKAGES | indent
 
-mkdir -p $BUILD_DIR/.apt
+mkdir -p /app/.apt
 
 for DEB in $(ls -1 $APT_CACHE_DIR/archives/*.deb); do
   topic "Installing $(basename $DEB)"
-  dpkg -x $DEB $BUILD_DIR/.apt/
+  dpkg -x $DEB /app/.apt
 done
+
+#
+# HACK: emulate an actual install and run the postinst script
+#
+topic "Running post installation scripts"
+mkdir -p /app/.apt/etc/alternatives
+mkdir -p /app/.apt/var/lib/dpkg/alternatives
+for DEB in $(ls -1 $APT_CACHE_DIR/archives/*.deb); do
+
+  rm -rf "$LP_DIR/control"
+  # extract the control files to the current directory
+  dpkg-deb -e $DEB "$LP_DIR/control"
+  pushd "$LP_DIR/control" > /dev/null
+  if [[ -f "postinst" ]]; then
+
+    # fix up paths
+    sed -i 's/\/usr/\/app\/.apt\/usr/g' postinst
+
+    # append --log if update-alternatives present
+    sed -i 's/update-alternatives /update-alternatives --altdir \/app\/.apt\/etc\/alternatives --admindir \/app\/.apt\/var\/lib\/dpkg\/alternatives --log update-alternatives.log /g' postinst
+
+    # run the post installation script
+    /bin/bash postinst configure | indent || echo "FAILED: postinst failure for $DEB" | indent
+    echo | indent
+  fi;
+  popd > /dev/null
+
+done;
+
+# copy /app to BUILD_DIR for slug packaging
+mkdir -p "$BUILD_DIR/.apt"
+cp -r /app/.apt/* "$BUILD_DIR/.apt"
 
 topic "Writing profile script"
 mkdir -p $BUILD_DIR/.profile.d
